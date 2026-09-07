@@ -50,15 +50,28 @@
 
 `episodes/` 下的文件名必须匹配 `^[0-9]{3}\.md$`，从 `001.md` 连续编号，不允许跳号或重复集号。示例见 [`examples/production-package-v0.1/`](examples/production-package-v0.1/)。
 
-### 3.2 文件编码与指纹
+### 3.2 文件编码、字节层和指纹
 
-- 文件必须是 UTF-8；不接受 UTF-16、二进制文件或 BOM。
-- 换行在计算指纹前统一为 LF；文件末尾统一保留一个换行。
-- 相对路径采用 POSIX 形式并按字典序排序。
-- `file_hash = SHA-256(规范化后的文件 UTF-8 字节)`。
-- `package_fingerprint = SHA-256(逐行拼接除 `source-manifest.md` 外的 `path + NUL + file_hash + LF` 的 UTF-8 字节)`；排除 manifest 是为了避免 manifest 内声明的 fingerprint 与自身形成循环依赖。
-- `source-manifest.md` 仍然必须单独生成 `file_hash` 并纳入预览文件清单；确认时会逐文件校验所有 hash，因此修改 manifest 仍会触发 `PACKAGE_HASH_MISMATCH`。
-- 解析结果必须返回每个文件的 `path`、`file_hash`、`byte_length`；不得把本地绝对路径或密钥放入 DTO。
+本契约明确区分四种字节，避免把“上传内容”“包指纹”和“写入正文”混为一谈：
+
+- `raw_bytes`：上传时收到的原始字节，不做改写。若 `source-manifest.md` 提供 `original_content_hash`，它只表示外部原始材料的 `SHA-256(raw_bytes)`，不参与本包校验。
+- `normalized_file_bytes`：解析器先拒绝 UTF-16、二进制和 UTF-8 BOM，再把 UTF-8 文本中的 CRLF/CR 统一为 LF；移除文件末尾所有 LF 后追加恰好一个 LF。不得 trim 空格或制表符，行尾空白和空白行仍属于内容。`file_hash = SHA-256(normalized_file_bytes)`，`byte_length` 也是该字节长度。
+- `episode_content_bytes`：从规范化后的 `episodes/NNN.md` 中取 `## Content` 区块正文，不包含 front matter、标题和分隔换行；正文内的换行按上述规则为 LF，行尾空格/制表符保留，末尾规范为恰好一个 LF。DTO 的 `content_hash` 是该字节串的 SHA-256。
+- `source_version_canonical_bytes`：按集号排序，把每集 `episode_content_bytes` 用恰好两个 LF 连接，并让整体末尾恰好一个 LF；`source_versions.content_hash/base_hash` 只 hash 这段 canonical bytes，不等同于任一文件 hash 或 package fingerprint。
+
+相对路径采用 POSIX 形式并按字典序排序。逐行记录格式固定为 `path + NUL + lowercase(file_hash_hex) + LF`，其 UTF-8 字节串再计算 SHA-256：
+
+- `package_fingerprint`：只拼接除 `source-manifest.md` 外的文件；这样 manifest 内声明的 fingerprint 不会与自身形成循环依赖。
+- `validation_fingerprint`：拼接**全部**文件（包括 manifest），是 Parse 到 Confirm 的完整校验快照，不写回 manifest。
+
+仓库内可复算命令为 `python docs/examples/verify-production-package-v0.1.py --check`；脚本同时输出两个 fingerprint、逐文件 hash 和规范化字节长度。当前示例包的期望输出为：
+
+```text
+package_fingerprint: sha256:8030bce57ee4c8c90bfe3f806dbabe953de937ed46ee61583adddd933d668d3a
+validation_fingerprint: sha256:d30484ae63ed4f05a05d8f43edd5e725cfab57c41e6e977948bffbb036c19b1b
+```
+
+解析结果必须返回短期 `preview_token`、每个文件的 `path`、`file_hash`、`byte_length` 以及 `validation_fingerprint`；不得把本地绝对路径或密钥放入 DTO。
 
 ### 3.3 Markdown 元数据规则
 
@@ -118,10 +131,12 @@
   "target_mode": "new_project",
   "status": "ready",
   "can_confirm": true,
+  "preview_token": "pv_opaque_short_lived_token",
   "package": {
     "package_id": "demo-night-market",
     "package_version": 1,
     "package_fingerprint": "sha256:...",
+    "validation_fingerprint": "sha256:...",
     "files": [
       { "path": "drama-package.md", "file_hash": "sha256:...", "byte_length": 1234 }
     ]
@@ -178,7 +193,7 @@
 1. **Parse / Preview**：读取上传内容、规范化、校验和生成 DTO。不得写项目、版本、剧集、人物、场景，不得调用模型。
 2. **Confirm / Commit**：用户明确确认预览结果后才写入。所有业务写入必须在一个可回滚的事务中完成；失败时不得留下半个项目、孤儿剧集或孤儿资产。
 
-确认请求至少携带 `package_fingerprint`、`target_mode=new_project` 和 `confirm_idempotency_key`。提交时必须再次校验指纹，不能信任客户端只传的预览结果。
+确认请求必须携带 `preview_token`、`package_fingerprint`、`validation_fingerprint`、`target_mode=new_project` 和 `confirm_idempotency_key`。Parse 服务必须在短期、不可变的预览存储中保留 token 对应的逐文件 hash/字节快照；Confirm 还必须提交完整的当前包，或引用同一不可变上传句柄。服务端重新计算全部文件的 `file_hash`、`package_fingerprint` 和 `validation_fingerprint`，并与快照逐项比对；只传 fingerprint 或只传 package_id 不能确认。manifest 也在全部文件比对范围内，因此任一文件（包括 `source-manifest.md`）变化都必须返回 `PACKAGE_HASH_MISMATCH`。
 
 ### 5.2 幂等键
 
@@ -186,11 +201,13 @@
 - 相同 `confirm_idempotency_key + package_fingerprint` 重复确认必须返回第一次确认的同一结果，不得创建第二个项目。
 - 同一 key 绑定不同 `package_fingerprint` 必须阻断并返回 `IDEMPOTENCY_KEY_REUSED`。
 - 不同 key 可以有意创建另一个新项目；平台不得仅凭 `package_id` 静默复用旧项目。
-- 后续实现必须把 key 与目标 `drama_id`、package fingerprint 和确认结果绑定；不能把“同包”误当成“同一次确认”。
+- 该强语义需要一个独立的持久化导入记录，不能用 `dramas.metadata` 或内存缓存替代。后续 schema/API 契约 PR 必须授权最小记录 `production_package_imports`：`confirm_idempotency_key`（唯一约束）、`package_fingerprint`、`validation_fingerprint`、`target_mode`、`status`（`in_progress/succeeded/failed`）、`drama_id`（可空）、`result_code/result_json` 和创建/完成时间。
+- Confirm 先以唯一约束原子 claim 该 key，再执行业务事务；重复 key 必须读取同一记录并返回保存的 terminal result，换 fingerprint 永远返回 `IDEMPOTENCY_KEY_REUSED`，并发 `in_progress` 返回可重试的冲突。失败结果也要落入记录，避免客户端重试产生语义漂移。
+- 本 PR 只冻结该持久化边界，不执行迁移；在该独立契约获批准并落地前，不得实现声称满足 v0.1 强幂等的 Confirm 端点。
 
 ### 5.3 v0.1 新项目写入顺序
 
-确认通过后，建议按以下顺序在同一事务中写入现有表；本 Issue 不授权新增表或迁移：
+确认通过后，建议按以下顺序在同一业务事务中写入现有表；导入记录按 5.2 的持久化边界单独由后续 schema/API 契约授权，本 PR 不执行迁移：
 
 1. `dramas`：写入 `title`、`genre`、`style`、`aspect_ratio`、`total_episodes`、`description`。`metadata` 可保存脱敏的 package/source 摘要、版本和指纹。
 2. `source_versions`：写入一条 `base_kind=source` 的不可变版本，`content` 使用**按集号拼接的已确认正文**（集间使用两个 LF）；`content_hash/base_hash` 使用该内容 hash，`stats` 标记 `origin=production_package` 和 package fingerprint。若未来包提供独立 `source.md`，才可用其内容替代拼接正文。
@@ -248,13 +265,14 @@
 
 | 场景 | 输入/操作 | 预期 |
 |---|---|---|
-| T01 合法最小包 | 使用 `examples/production-package-v0.1` 解析 | `ready=true`，两集、人物/场景引用完整，无写库 |
+| T01 合法最小包 | 执行 `python docs/examples/verify-production-package-v0.1.py --check`，再解析 `examples/production-package-v0.1` | fingerprint 可复算且与 manifest 声明一致；`ready=true`，两集、人物/场景引用完整，无写库 |
 | T02 可选文件缺失 | 删除 `characters.md` 或 `scenes.md` | 仍可解析；对应数组为空，不产生 error |
 | T03 缺必填文件 | 删除 `drama-package.md`/`source-manifest.md`/`episodes/001.md` | `PACKAGE_FILE_MISSING`，`can_confirm=false` |
 | T04 集号错误 | 将 `episodes/001.md` 改名为 `002.md` 或跳号 | `PACKAGE_EPISODE_INVALID` |
 | T05 重复实体 | 添加重复的 `C001` 或 `S001` 区块 | `PACKAGE_DUPLICATE_ID` |
 | T06 未知引用 | episode 引用不存在的角色/场景 ID | `PACKAGE_REFERENCE_UNKNOWN` |
-| T07 内容变化 | 预览后修改任一文件再确认 | `PACKAGE_HASH_MISMATCH`，不写库 |
+| T07a 内容变化 | 预览后修改任一非 manifest 文件再确认 | `PACKAGE_HASH_MISMATCH`，不写库 |
+| T07b manifest 变化 | 预览后只修改 `source-manifest.md`（例如 reviewer note）再确认 | `validation_fingerprint`/逐文件 hash 不一致，返回 `PACKAGE_HASH_MISMATCH`，不写库 |
 | T08 重复确认 | 相同 key 和 fingerprint 确认两次 | 返回同一结果，不新增项目 |
 | T09 key 复用 | 相同 key 换另一 fingerprint 确认 | `IDEMPOTENCY_KEY_REUSED` |
 | T10 解析只读 | 在 parse 期间检查 drama/source/episode/asset 表 | 行数和内容均不改变 |

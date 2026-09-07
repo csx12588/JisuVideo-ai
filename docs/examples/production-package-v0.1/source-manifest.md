@@ -5,7 +5,7 @@ source_kind: external_episodic
 processed_at: "2026-09-07T19:00:00+08:00"
 processor: "CodeBuddy example 1.0"
 human_reviewed: true
-package_fingerprint: "sha256:fe6ed81dbd91d1e2918061f91d475cac5dad18bc319c553d3d688ba8e1f1a44a"
+package_fingerprint: "sha256:8030bce57ee4c8c90bfe3f806dbabe953de937ed46ee61583adddd933d668d3a"
 original_name: "夜市回声-已确认分集包"
 processing_steps:
   - external_noise_removal

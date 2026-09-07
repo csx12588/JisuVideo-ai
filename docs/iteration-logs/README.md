@@ -79,6 +79,7 @@
 | HB-20260907-02 | 长文主流程收口——外部处理、短剧生产包导入与项目圣经统筹 | 已完成方向与实施规格；不再将平台内去噪作为长文必经路径，下一步单列生产包导入最小契约 | [查看实施方案](../long-form-production-package-plan.md) |
 | HB-20260907-03 | 近期迭代与长文主路线复盘订正 | #86–#92 保留为版本管理/兼容整理能力；#75 不再作为平台内长文主流程验收；路线图改为先做生产包导入与项目圣经，随后才做上下文和全局资产接线 | [查看生产包方案](../long-form-production-package-plan.md) |
 | HB-20260907-04 | Issue #95 阶段 1：生产包导入 Markdown v0.1 最小契约与解析预览边界 | 已完成契约、最小两集模板/示例和 T01–T12 测试矩阵；本批只冻结字段、指纹、只读解析、确认写入、幂等/冲突和错误语义，不改 schema/API/项目大页 | [查看导入契约](../production-package-import-v0.1.md) |
+| HB-20260907-05 | Issue #95 PR #97 评审反馈收口 | 已补齐可复算 fingerprint 脚本、manifest-inclusive validation snapshot、强幂等持久化边界和原始/规范化/写入正文的字节语义；待 PR #97 复审 | [查看导入契约](../production-package-import-v0.1.md) |
 
 ## 记录规范
 
