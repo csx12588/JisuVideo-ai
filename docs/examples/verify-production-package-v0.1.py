@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 MANIFEST_NAME = "source-manifest.md"
+EPISODE_PATH = re.compile(r"^episodes/(\d{3})\.md$")
 DECLARED_FINGERPRINT = re.compile(
     rb"^package_fingerprint:\s*[\"']?(sha256:[0-9a-f]{64})[\"']?\s*$",
     re.MULTILINE,
@@ -36,6 +37,22 @@ def fingerprint(rows: list[tuple[str, str]]) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def episode_content(normalized_file_bytes: bytes, path: str) -> bytes:
+    """Extract and normalize the Content section without trimming content bytes."""
+    heading = re.search(rb"(?m)^## Content\n", normalized_file_bytes)
+    if not heading:
+        raise ValueError(f"missing ## Content heading: {path}")
+    body = normalized_file_bytes[heading.end():]
+    if body.startswith(b"\n"):
+        body = body[1:]  # exactly one Markdown heading/body separator
+    next_heading = re.search(rb"(?m)^## [^\n]*\n", body)
+    if next_heading:
+        body = body[:next_heading.start()]
+        if body.endswith(b"\n"):
+            body = body[:-1]  # exactly one separator before the next section
+    return body.rstrip(b"\n") + b"\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -52,6 +69,7 @@ def main() -> int:
 
     rows: list[tuple[str, str]] = []
     sizes: dict[str, int] = {}
+    episode_contents: list[tuple[int, bytes]] = []
     try:
         for path in sorted(p for p in root.rglob("*") if p.is_file()):
             relative = path.relative_to(root).as_posix()
@@ -59,6 +77,11 @@ def main() -> int:
             digest = hashlib.sha256(normalized).hexdigest()
             rows.append((relative, digest))
             sizes[relative] = len(normalized)
+            episode_match = EPISODE_PATH.match(relative)
+            if episode_match:
+                episode_contents.append(
+                    (int(episode_match.group(1)), episode_content(normalized, relative))
+                )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -66,12 +89,22 @@ def main() -> int:
     package_rows = [(path, digest) for path, digest in rows if path != MANIFEST_NAME]
     package_fp = fingerprint(package_rows)
     validation_fp = fingerprint(rows)
+    if not episode_contents:
+        print("no episode files found", file=sys.stderr)
+        return 1
+    episode_contents.sort(key=lambda item: item[0])
+    canonical = b"".join(
+        content + (b"\n" if index < len(episode_contents) - 1 else b"")
+        for index, (_, content) in enumerate(episode_contents)
+    )
+    canonical_hash = "sha256:" + hashlib.sha256(canonical).hexdigest()
     manifest = (root / MANIFEST_NAME).read_bytes()
     match = DECLARED_FINGERPRINT.search(manifest)
     declared = match.group(1).decode("ascii") if match else "<missing or invalid>"
 
     print(f"package_fingerprint: {package_fp}")
     print(f"validation_fingerprint: {validation_fp}")
+    print(f"source_version_canonical_hash: {canonical_hash}")
     print(f"manifest_declared_package_fingerprint: {declared}")
     for path, digest in rows:
         print(f"{path}\t{digest}\t{sizes[path]} bytes")

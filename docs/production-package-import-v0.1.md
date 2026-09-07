@@ -57,7 +57,7 @@
 - `raw_bytes`：上传时收到的原始字节，不做改写。若 `source-manifest.md` 提供 `original_content_hash`，它只表示外部原始材料的 `SHA-256(raw_bytes)`，不参与本包校验。
 - `normalized_file_bytes`：解析器先拒绝 UTF-16、二进制和 UTF-8 BOM，再把 UTF-8 文本中的 CRLF/CR 统一为 LF；移除文件末尾所有 LF 后追加恰好一个 LF。不得 trim 空格或制表符，行尾空白和空白行仍属于内容。`file_hash = SHA-256(normalized_file_bytes)`，`byte_length` 也是该字节长度。
 - `episode_content_bytes`：从规范化后的 `episodes/NNN.md` 中取 `## Content` 区块正文，不包含 front matter、标题和分隔换行；正文内的换行按上述规则为 LF，行尾空格/制表符保留，末尾规范为恰好一个 LF。DTO 的 `content_hash` 是该字节串的 SHA-256。
-- `source_version_canonical_bytes`：按集号排序，把每集 `episode_content_bytes` 用恰好两个 LF 连接，并让整体末尾恰好一个 LF；`source_versions.content_hash/base_hash` 只 hash 这段 canonical bytes，不等同于任一文件 hash 或 package fingerprint。
+- `source_version_canonical_bytes`：按集号排序。每个 `episode_content_bytes` 自带恰好一个末尾 LF；对每个**非最后一集**再追加一个 LF，最后一集后不追加，因此相邻两集之间总共恰好两个 LF，整体末尾仍恰好一个 LF。`source_versions.content_hash/base_hash` 只 hash 这段 canonical bytes，不等同于任一文件 hash 或 package fingerprint。
 
 相对路径采用 POSIX 形式并按字典序排序。逐行记录格式固定为 `path + NUL + lowercase(file_hash_hex) + LF`，其 UTF-8 字节串再计算 SHA-256：
 
@@ -69,6 +69,7 @@
 ```text
 package_fingerprint: sha256:8030bce57ee4c8c90bfe3f806dbabe953de937ed46ee61583adddd933d668d3a
 validation_fingerprint: sha256:d30484ae63ed4f05a05d8f43edd5e725cfab57c41e6e977948bffbb036c19b1b
+source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25ea9cdfd49d76db53ef767c
 ```
 
 解析结果必须返回短期 `preview_token`、每个文件的 `path`、`file_hash`、`byte_length` 以及 `validation_fingerprint`；不得把本地绝对路径或密钥放入 DTO。
@@ -201,21 +202,24 @@ validation_fingerprint: sha256:d30484ae63ed4f05a05d8f43edd5e725cfab57c41e6e97794
 - 相同 `confirm_idempotency_key + package_fingerprint` 重复确认必须返回第一次确认的同一结果，不得创建第二个项目。
 - 同一 key 绑定不同 `package_fingerprint` 必须阻断并返回 `IDEMPOTENCY_KEY_REUSED`。
 - 不同 key 可以有意创建另一个新项目；平台不得仅凭 `package_id` 静默复用旧项目。
-- 该强语义需要一个独立的持久化导入记录，不能用 `dramas.metadata` 或内存缓存替代。后续 schema/API 契约 PR 必须授权最小记录 `production_package_imports`：`confirm_idempotency_key`（唯一约束）、`package_fingerprint`、`validation_fingerprint`、`target_mode`、`status`（`in_progress/succeeded/failed`）、`drama_id`（可空）、`result_code/result_json` 和创建/完成时间。
-- Confirm 先以唯一约束原子 claim 该 key，再执行业务事务；重复 key 必须读取同一记录并返回保存的 terminal result，换 fingerprint 永远返回 `IDEMPOTENCY_KEY_REUSED`，并发 `in_progress` 返回可重试的冲突。失败结果也要落入记录，避免客户端重试产生语义漂移。
-- 本 PR 只冻结该持久化边界，不执行迁移；在该独立契约获批准并落地前，不得实现声称满足 v0.1 强幂等的 Confirm 端点。
+- 该强语义需要一个独立的持久化导入记录，不能用 `dramas.metadata` 或内存缓存替代。后续 schema/API 契约 PR 必须授权最小记录 `production_package_imports`：`confirm_idempotency_key`（唯一约束）、`package_fingerprint`、`validation_fingerprint`、`target_mode`、`status`（本版只落 `succeeded`）、`drama_id`、`result_json` 和创建/完成时间。
+- 幂等记录的 INSERT、`dramas`/`source_versions`/`episodes`/资产写入，以及记录 `succeeded + drama_id + result_json` 必须在**同一个数据库事务**中完成并一起 commit；不允许先单独 claim 再开业务事务，也不允许持久化无法恢复的 `in_progress` 或独立失败记录。
+- 相同 key 的并发请求必须等待唯一约束对应的事务完成：首个事务 commit 后，后续请求读取 `succeeded` 原结果；首个事务 rollback（包括幂等记录和全部业务数据）后，后续请求可以安全重新执行。commit 已完成但响应丢失时，重试只读取已保存结果；业务写入任一步失败则整笔 rollback 并返回 `PACKAGE_WRITE_FAILED`。
+- 同一 key 换 fingerprint 永远返回 `IDEMPOTENCY_KEY_REUSED`；不同 key 才能创建另一个新项目。本 PR 只冻结该事务/持久化边界，不执行迁移；在该独立契约获批准并落地前，不得实现声称满足 v0.1 强幂等的 Confirm 端点。
 
 ### 5.3 v0.1 新项目写入顺序
 
-确认通过后，建议按以下顺序在同一业务事务中写入现有表；导入记录按 5.2 的持久化边界单独由后续 schema/API 契约授权，本 PR 不执行迁移：
+确认通过后，建议按以下顺序在同一业务事务中写入现有表；导入记录也必须按 5.2 参加同一事务。其表结构由后续 schema/API 契约授权，本 PR 不执行迁移：
 
 1. `dramas`：写入 `title`、`genre`、`style`、`aspect_ratio`、`total_episodes`、`description`。`metadata` 可保存脱敏的 package/source 摘要、版本和指纹。
-2. `source_versions`：写入一条 `base_kind=source` 的不可变版本，`content` 使用**按集号拼接的已确认正文**（集间使用两个 LF）；`content_hash/base_hash` 使用该内容 hash，`stats` 标记 `origin=production_package` 和 package fingerprint。若未来包提供独立 `source.md`，才可用其内容替代拼接正文。
+2. `source_versions`：写入一条 `base_kind=source` 的不可变版本，`content` 使用**按集号拼接的已确认正文**：每集正文末尾一个 LF，仅在非最后一集后额外追加一个 LF；`content_hash/base_hash` 必须对该 UTF-8 canonical bytes 计算，`stats` 标记 `origin=production_package` 和 package fingerprint。若未来包提供独立 `source.md`，才可用其内容替代拼接正文。
 3. `episodes`：按 `episode_number` 写入 `title`、`content`、`status=draft`；不写 `script_content`、视频 URL 或生成任务。
 4. `characters`、`scenes`：只写 Markdown 中的文本字段，生成新的数据库 ID；不导入图片、不调用提取 Agent。再用 `episode_characters`、`episode_scenes` 建立关系。
 5. 将 `dramas.current_source_version_id` 指向本次新建 source 版本，并保存确认结果/版本来源摘要。
 
 `dramas.description` 是旧链路兼容落点：v0.1 对已分集包使用与 `source_versions.content` 相同的按集拼接正文，不能写成大纲摘要，也不能覆盖包中任何单集正文。后续 UI 若展示来源，必须标注该正文是 `package-derived`，原始外部来源以 `source-manifest.md` 和指纹为准。
+
+现有 `backend/src/services/source-versions.ts` 的 `sourceVersionContentHash` 遵循旧版 I1：对字符串执行 `trim()` 后再 hash；该 helper 只保留给旧项目兼容路径。生产包导入必须使用独立的 byte-oriented canonical hash，不得调用或修改这个会丢失尾部 LF/边界空白的旧 helper；本契约 PR 不改运行时代码。
 
 ### 5.4 冲突和人工选择
 
