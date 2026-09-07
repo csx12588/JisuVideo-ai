@@ -64,12 +64,15 @@
 - `package_fingerprint`：只拼接除 `source-manifest.md` 外的文件；这样 manifest 内声明的 fingerprint 不会与自身形成循环依赖。
 - `validation_fingerprint`：拼接**全部**文件（包括 manifest），是 Parse 到 Confirm 的完整校验快照，不写回 manifest。
 
-仓库内可复算命令为 `python docs/examples/verify-production-package-v0.1.py --check`；脚本同时输出两个 fingerprint、逐文件 hash 和规范化字节长度。当前示例包的期望输出为：
+DTO、日志和示例脚本使用 `sha256:<64 位 lowercase hex>` 展示值；现有 `source_versions.content_hash` 与 `base_hash` 数据库列只能写 **64 位 lowercase hex（不含 `sha256:` 前缀）**。两者是同一个摘要，写入时只去掉展示前缀，不改变被 hash 的 canonical bytes。
+
+仓库内可复算命令为 `python docs/examples/verify-production-package-v0.1.py --check`；脚本同时输出 package/validation/canonical 三个摘要、逐文件 hash 和规范化字节长度。当前示例包的期望输出为：
 
 ```text
 package_fingerprint: sha256:8030bce57ee4c8c90bfe3f806dbabe953de937ed46ee61583adddd933d668d3a
 validation_fingerprint: sha256:d30484ae63ed4f05a05d8f43edd5e725cfab57c41e6e977948bffbb036c19b1b
 source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25ea9cdfd49d76db53ef767c
+source_version_canonical_hash_hex: 1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25ea9cdfd49d76db53ef767c
 ```
 
 解析结果必须返回短期 `preview_token`、每个文件的 `path`、`file_hash`、`byte_length` 以及 `validation_fingerprint`；不得把本地绝对路径或密钥放入 DTO。
@@ -194,13 +197,21 @@ source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25
 1. **Parse / Preview**：读取上传内容、规范化、校验和生成 DTO。不得写项目、版本、剧集、人物、场景，不得调用模型。
 2. **Confirm / Commit**：用户明确确认预览结果后才写入。所有业务写入必须在一个可回滚的事务中完成；失败时不得留下半个项目、孤儿剧集或孤儿资产。
 
-确认请求必须携带 `preview_token`、`package_fingerprint`、`validation_fingerprint`、`target_mode=new_project` 和 `confirm_idempotency_key`。Parse 服务必须在短期、不可变的预览存储中保留 token 对应的逐文件 hash/字节快照；Confirm 还必须提交完整的当前包，或引用同一不可变上传句柄。服务端重新计算全部文件的 `file_hash`、`package_fingerprint` 和 `validation_fingerprint`，并与快照逐项比对；只传 fingerprint 或只传 package_id 不能确认。manifest 也在全部文件比对范围内，因此任一文件（包括 `source-manifest.md`）变化都必须返回 `PACKAGE_HASH_MISMATCH`。
+确认请求必须携带 `preview_token`、`package_fingerprint`、`validation_fingerprint`、`target_mode=new_project` 和 `confirm_idempotency_key`。Parse 服务必须在短期、不可变的预览存储中保留 token 对应的逐文件 hash/字节快照；Confirm 还必须提交完整的当前包，或引用同一不可变上传句柄。
+
+Confirm 固定按以下顺序处理：
+
+1. 先验证 `preview_token`、当前包的全部 `file_hash`、`package_fingerprint` 和 `validation_fingerprint`；任一不一致立即返回 `PACKAGE_HASH_MISMATCH`，不进入幂等查询或结果重放。
+2. 快照验证通过后，再按 5.2 比较 `confirm_idempotency_key + package_fingerprint + validation_fingerprint + target_mode`；同 key 绑定了不同身份时返回 `IDEMPOTENCY_KEY_REUSED`，不得静默返回旧成功结果。
+3. 只有身份匹配且需要首次写入时，才进入同一数据库事务。
+
+manifest 也在全部文件比对范围内，因此预览后任一文件（包括 `source-manifest.md`）变化都必须先返回 `PACKAGE_HASH_MISMATCH`。
 
 ### 5.2 幂等键
 
 - `confirm_idempotency_key` 是调用方生成的稳定不透明字符串，长度 16–128 个 ASCII 字符。
-- 相同 `confirm_idempotency_key + package_fingerprint` 重复确认必须返回第一次确认的同一结果，不得创建第二个项目。
-- 同一 key 绑定不同 `package_fingerprint` 必须阻断并返回 `IDEMPOTENCY_KEY_REUSED`。
+- 一次确认的逻辑身份固定为 `confirm_idempotency_key + package_fingerprint + validation_fingerprint + target_mode`；四项完全相同的重复确认必须返回第一次确认的同一结果，不得创建第二个项目。
+- 同一 key 绑定不同 `package_fingerprint`、不同 `validation_fingerprint` 或不同 `target_mode` 必须阻断并返回 `IDEMPOTENCY_KEY_REUSED`。`confirm_idempotency_key` 仍使用唯一约束实现并发串行化，绑定字段用于判断是否为同一次确认。
 - 不同 key 可以有意创建另一个新项目；平台不得仅凭 `package_id` 静默复用旧项目。
 - 该强语义需要一个独立的持久化导入记录，不能用 `dramas.metadata` 或内存缓存替代。后续 schema/API 契约 PR 必须授权最小记录 `production_package_imports`：`confirm_idempotency_key`（唯一约束）、`package_fingerprint`、`validation_fingerprint`、`target_mode`、`status`（本版只落 `succeeded`）、`drama_id`、`result_json` 和创建/完成时间。
 - 幂等记录的 INSERT、`dramas`/`source_versions`/`episodes`/资产写入，以及记录 `succeeded + drama_id + result_json` 必须在**同一个数据库事务**中完成并一起 commit；不允许先单独 claim 再开业务事务，也不允许持久化无法恢复的 `in_progress` 或独立失败记录。
@@ -212,7 +223,7 @@ source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25
 确认通过后，建议按以下顺序在同一业务事务中写入现有表；导入记录也必须按 5.2 参加同一事务。其表结构由后续 schema/API 契约授权，本 PR 不执行迁移：
 
 1. `dramas`：写入 `title`、`genre`、`style`、`aspect_ratio`、`total_episodes`、`description`。`metadata` 可保存脱敏的 package/source 摘要、版本和指纹。
-2. `source_versions`：写入一条 `base_kind=source` 的不可变版本，`content` 使用**按集号拼接的已确认正文**：每集正文末尾一个 LF，仅在非最后一集后额外追加一个 LF；`content_hash/base_hash` 必须对该 UTF-8 canonical bytes 计算，`stats` 标记 `origin=production_package` 和 package fingerprint。若未来包提供独立 `source.md`，才可用其内容替代拼接正文。
+2. `source_versions`：写入一条 `base_kind=source` 的不可变版本，`content` 使用**按集号拼接的已确认正文**：每集正文末尾一个 LF，仅在非最后一集后额外追加一个 LF；`content_hash/base_hash` 必须对该 UTF-8 canonical bytes 计算，并以 64 位 lowercase hex（无 `sha256:` 前缀）写入数据库，`stats` 标记 `origin=production_package` 和 package fingerprint。若未来包提供独立 `source.md`，才可用其内容替代拼接正文。
 3. `episodes`：按 `episode_number` 写入 `title`、`content`、`status=draft`；不写 `script_content`、视频 URL 或生成任务。
 4. `characters`、`scenes`：只写 Markdown 中的文本字段，生成新的数据库 ID；不导入图片、不调用提取 Agent。再用 `episode_characters`、`episode_scenes` 建立关系。
 5. 将 `dramas.current_source_version_id` 指向本次新建 source 版本，并保存确认结果/版本来源摘要。
@@ -236,7 +247,7 @@ source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25
 | `drama-package.md` Drama Bible | `dramas.metadata` 的 package 摘要；后续项目圣经字段 | 不写入 `description`；不得当作原文正文 |
 | `episodes/*.md` Content | `episodes.content` | 原文保留；按集号唯一；不自动重写 |
 | `source-manifest.md` 与指纹 | `source_versions.stats` + `dramas.metadata` 来源摘要 | 记录工具、版本、人工确认和 hash；不访问原始 URL |
-| 按集拼接正文 | `dramas.description`、`source_versions.content` | 仅作为旧项目/旧接口兼容正文，标记 `package-derived` |
+| 按集拼接正文与 canonical hash | `dramas.description`、`source_versions.content/content_hash/base_hash` | 正文按 3.2 规则写入；数据库 hash 只存 64 位 lowercase hex，不含 `sha256:`；仅作为旧项目/旧接口兼容正文，标记 `package-derived` |
 | `characters.md` | `characters` + `episode_characters` | 只创建文本实体和显式引用关系 |
 | `scenes.md` | `scenes` + `episode_scenes` | 只创建文本实体和显式引用关系 |
 | 外部 `episode_id/character_id/scene_id` | DTO 内部引用映射 | 不直接写入数据库 ID；确认时生成 mapping 并可追溯 |
@@ -259,7 +270,7 @@ source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25
 | `PACKAGE_REFERENCE_UNKNOWN` | parse | error | 展示缺失的角色/场景 external ID |
 | `PACKAGE_HASH_MISMATCH` | parse/confirm | error | 提示包在预览后发生变化，要求重新解析 |
 | `PACKAGE_TARGET_UNSUPPORTED` | parse/confirm | error | v0.1 只允许新建项目 |
-| `IDEMPOTENCY_KEY_REUSED` | confirm | error | 提示确认 key 已绑定另一个包 |
+| `IDEMPOTENCY_KEY_REUSED` | confirm | error | 提示确认 key 已绑定另一组 package/validation fingerprint 或 target mode |
 | `PACKAGE_CONFLICT` | confirm | error | 展示冲突详情，要求用户重新确认 |
 | `PACKAGE_WRITE_FAILED` | confirm | error | 展示可重试错误；事务必须回滚且不得自动重试写入 |
 
@@ -269,7 +280,7 @@ source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25
 
 | 场景 | 输入/操作 | 预期 |
 |---|---|---|
-| T01 合法最小包 | 执行 `python docs/examples/verify-production-package-v0.1.py --check`，再解析 `examples/production-package-v0.1` | fingerprint 可复算且与 manifest 声明一致；`ready=true`，两集、人物/场景引用完整，无写库 |
+| T01 合法最小包 | 执行 `python docs/examples/verify-production-package-v0.1.py --check`，再解析 `examples/production-package-v0.1` | package/validation/canonical fingerprint 可复算且与期望向量一致；canonical 展示值去掉前缀后等于 DB 两列值；`ready=true`，两集、人物/场景引用完整，无写库 |
 | T02 可选文件缺失 | 删除 `characters.md` 或 `scenes.md` | 仍可解析；对应数组为空，不产生 error |
 | T03 缺必填文件 | 删除 `drama-package.md`/`source-manifest.md`/`episodes/001.md` | `PACKAGE_FILE_MISSING`，`can_confirm=false` |
 | T04 集号错误 | 将 `episodes/001.md` 改名为 `002.md` 或跳号 | `PACKAGE_EPISODE_INVALID` |
@@ -277,13 +288,15 @@ source_version_canonical_hash: sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25
 | T06 未知引用 | episode 引用不存在的角色/场景 ID | `PACKAGE_REFERENCE_UNKNOWN` |
 | T07a 内容变化 | 预览后修改任一非 manifest 文件再确认 | `PACKAGE_HASH_MISMATCH`，不写库 |
 | T07b manifest 变化 | 预览后只修改 `source-manifest.md`（例如 reviewer note）再确认 | `validation_fingerprint`/逐文件 hash 不一致，返回 `PACKAGE_HASH_MISMATCH`，不写库 |
-| T08 重复确认 | 相同 key 和 fingerprint 确认两次 | 返回同一结果，不新增项目 |
-| T09 key 复用 | 相同 key 换另一 fingerprint 确认 | `IDEMPOTENCY_KEY_REUSED` |
+| T08 重复确认 | 相同 key、package fingerprint、validation fingerprint、target mode 确认两次 | 返回同一结果，不新增项目 |
+| T08b manifest 变化后重放 | 同 key、同 package fingerprint，预览后只修改 manifest 再确认 | 第 1 步先返回 `PACKAGE_HASH_MISMATCH`，不得重放旧成功结果 |
+| T08c 新快照复用 key | 同 key 使用另一份合法 preview（package fingerprint 相同但 validation fingerprint 不同） | `IDEMPOTENCY_KEY_REUSED`，不得重放旧结果 |
+| T09 key 复用 | 相同 key 换另一 package fingerprint 或 target mode 确认 | `IDEMPOTENCY_KEY_REUSED` |
 | T10 解析只读 | 在 parse 期间检查 drama/source/episode/asset 表 | 行数和内容均不改变 |
 | T11 事务回滚 | 确认写入中途注入失败 | 无半成品项目/剧集/资产；返回 `PACKAGE_WRITE_FAILED` |
 | T12 禁止副作用 | 解析合法包并观察模型/任务调用 | 不调用 AI、供应商、生成任务或旧 clean 入口 |
 
-实现 PR 必须把 T01–T12 映射到自动测试或可复现的验收脚本；本契约 PR 只冻结矩阵，不添加运行时代码。
+实现 PR 必须把 T01–T12、T08b、T08c 映射到自动测试或可复现的验收脚本；本契约 PR 只冻结矩阵，不添加运行时代码。
 
 ## 9. 版本与后续扩展
 

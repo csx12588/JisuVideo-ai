@@ -81,6 +81,7 @@
 | HB-20260907-04 | Issue #95 阶段 1：生产包导入 Markdown v0.1 最小契约与解析预览边界 | 已完成契约、最小两集模板/示例和 T01–T12 测试矩阵；本批只冻结字段、指纹、只读解析、确认写入、幂等/冲突和错误语义，不改 schema/API/项目大页 | [查看导入契约](../production-package-import-v0.1.md) |
 | HB-20260907-05 | Issue #95 PR #97 评审反馈收口 | 已补齐可复算 fingerprint 脚本、manifest-inclusive validation snapshot、强幂等持久化边界和原始/规范化/写入正文的字节语义；待 PR #97 复审 | [查看导入契约](../production-package-import-v0.1.md) |
 | HB-20260907-06 | Issue #95 PR #97 第二轮评审反馈收口 | 已将幂等记录、业务数据和 succeeded 结果冻结为同一事务；补充 source canonical 拼接精确规则、可复算 hash 向量及旧 trim helper 兼容边界；待 PR #97 再次复审 | [查看导入契约](../production-package-import-v0.1.md) |
+| HB-20260907-07 | Issue #95 PR #97 第三轮评审反馈收口 | 已固定 validation fingerprint 参与确认身份及校验顺序；补充 T08b/T08c；明确 `sha256:` 展示值与数据库 64 位 hex 存储值的转换，并让金样例脚本校验三组摘要；待 PR #97 最后一轮复审 | [查看导入契约](../production-package-import-v0.1.md) |
 
 ## 记录规范
 

@@ -11,6 +11,11 @@ from pathlib import Path
 
 MANIFEST_NAME = "source-manifest.md"
 EPISODE_PATH = re.compile(r"^episodes/(\d{3})\.md$")
+EXPECTED = {
+    "package_fingerprint": "sha256:8030bce57ee4c8c90bfe3f806dbabe953de937ed46ee61583adddd933d668d3a",
+    "validation_fingerprint": "sha256:d30484ae63ed4f05a05d8f43edd5e725cfab57c41e6e977948bffbb036c19b1b",
+    "source_version_canonical_hash": "sha256:1d2f0bc17032163649f4aa3d78ed890dc34dbe3f25ea9cdfd49d76db53ef767c",
+}
 DECLARED_FINGERPRINT = re.compile(
     rb"^package_fingerprint:\s*[\"']?(sha256:[0-9a-f]{64})[\"']?\s*$",
     re.MULTILINE,
@@ -98,6 +103,7 @@ def main() -> int:
         for index, (_, content) in enumerate(episode_contents)
     )
     canonical_hash = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    canonical_hash_hex = canonical_hash.removeprefix("sha256:")
     manifest = (root / MANIFEST_NAME).read_bytes()
     match = DECLARED_FINGERPRINT.search(manifest)
     declared = match.group(1).decode("ascii") if match else "<missing or invalid>"
@@ -105,6 +111,7 @@ def main() -> int:
     print(f"package_fingerprint: {package_fp}")
     print(f"validation_fingerprint: {validation_fp}")
     print(f"source_version_canonical_hash: {canonical_hash}")
+    print(f"source_version_canonical_hash_hex: {canonical_hash_hex}")
     print(f"manifest_declared_package_fingerprint: {declared}")
     for path, digest in rows:
         print(f"{path}\t{digest}\t{sizes[path]} bytes")
@@ -112,8 +119,19 @@ def main() -> int:
     if args.check and declared != package_fp:
         print("ERROR: manifest package_fingerprint does not match", file=sys.stderr)
         return 1
+    default_root = (Path(__file__).parent / "production-package-v0.1").resolve()
+    if args.check and root == default_root:
+        actual = {
+            "package_fingerprint": package_fp,
+            "validation_fingerprint": validation_fp,
+            "source_version_canonical_hash": canonical_hash,
+        }
+        for name, expected in EXPECTED.items():
+            if actual[name] != expected:
+                print(f"ERROR: golden fixture {name} does not match", file=sys.stderr)
+                return 1
     if args.check:
-        print("OK: package fingerprints are reproducible")
+        print("OK: package fingerprints and canonical hash are reproducible")
     return 0
 
 
