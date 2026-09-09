@@ -164,6 +164,29 @@ async function uploadReq<T = any>(path: string, file: File, meta: Record<string,
   return json.data ?? json
 }
 
+async function productionPackagePreviewReq<T = any>(file: File): Promise<T> {
+  const fd = new FormData()
+  fd.append('file', file)
+  // Do not use req(): the ZIP must remain multipart and must never be serialized
+  // or included in the normal JSON request summary.
+  const resp = await fetch(`${BASE}/production-packages/preview`, { method: 'POST', body: fd })
+  const json = await resp.json().catch(() => ({}))
+  if (!resp.ok || (json.code && json.code >= 400)) {
+    const error: any = new Error(json.message || `${resp.status}`)
+    error.status = resp.status
+    error.code = json.code
+    error.details = json.details
+    throw error
+  }
+  return json.data ?? json
+}
+
+export const productionPackageAPI = {
+  preview: (file: File) => productionPackagePreviewReq(file),
+  getPreview: (token: string) => api.get(`/production-packages/preview/${encodeURIComponent(token)}`),
+  confirm: (data: { preview_token: string; package_fingerprint: string; validation_fingerprint: string; idempotency_key: string }) => api.post('/production-packages/import/confirm', data),
+}
+
 export const uploadAPI = {
   image: (f: File, meta?: Record<string, any>) => uploadReq<{ url: string; path: string; asset_id?: number }>('/upload/image', f, meta),
   video: (f: File, meta?: Record<string, any>) => uploadReq<{ url: string; path: string; asset_id?: number }>('/upload/video', f, meta),
