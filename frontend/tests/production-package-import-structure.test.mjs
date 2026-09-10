@@ -36,10 +36,18 @@ test('production-package API uploads multipart FormData and uses shared preview 
 })
 
 test('production-package errors preserve actionable retry guidance', () => {
+  assert.match(page, /PACKAGE_PREVIEW_UNAUTHORIZED/)
+  assert.match(page, /PACKAGE_PREVIEW_AUTH_UNAVAILABLE/)
   assert.match(page, /PACKAGE_PREVIEW_EXPIRED/)
   assert.match(page, /PACKAGE_SNAPSHOT_MISMATCH/)
   assert.match(page, /PACKAGE_IMPORT_IN_PROGRESS/)
   assert.match(page, /PACKAGE_IMPORT_IDEMPOTENCY_CONFLICT/)
   assert.match(page, /PACKAGE_IMPORT_FAILED/)
   assert.match(page, /productionPackageError/)
+})
+
+test('production-package auth errors explain session or service recovery', () => {
+  assert.match(page, /登录会话已失效或跨域配置异常，请刷新页面重新登录。/)
+  assert.match(page, /预览会话服务暂不可用，请稍后重试。/)
+  assert.match(page, /请点“返回重新选择”重新上传，以使用新的幂等键。/)
 })
