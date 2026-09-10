@@ -266,6 +266,7 @@
                 {{ productionPackageBusy ? '检查中…' : '选择 ZIP' }}
               </button>
             </div>
+            <p v-if="productionPackageError" class="package-error" role="alert">{{ productionPackageError }}</p>
 
             <div v-if="sourceMode === 'file'" class="source-import-panel" @dragover.prevent @drop.prevent="handleFileDrop">
               <input ref="sourceFileInput" type="file" accept=".txt,.md,text/plain,text/markdown" hidden @change="handleSourceFile" />
@@ -333,6 +334,7 @@
               <Check v-else :size="17" />
               <div><strong>{{ productionPackagePreview.status === 'blocked' ? '生产包存在阻断问题' : '生产包检查通过' }}</strong><span>{{ productionPackagePreview.can_confirm ? '确认后才会写入项目、剧集、人物和场景' : '请修正外部文件后重新上传' }}</span></div>
             </div>
+            <p v-if="productionPackageError" class="package-error" role="alert">{{ productionPackageError }}</p>
             <section v-if="productionPackagePreview?.project" class="package-section">
               <div class="section-headline"><div><span class="section-index">01</span><strong>项目概览</strong></div><span>{{ productionPackagePreview.package?.package_version ? `v${productionPackagePreview.package.package_version}` : '' }}</span></div>
               <div class="package-overview"><strong>{{ productionPackagePreview.project.title || '未命名项目' }}</strong><span>{{ [productionPackagePreview.project.genre, productionPackagePreview.project.style, productionPackagePreview.project.aspect_ratio].filter(Boolean).join(' · ') }}</span><p>{{ productionPackagePreview.project.bible_summary || '暂无项目简介' }}</p></div>
@@ -530,6 +532,7 @@ const productionPackagePreview = ref(null)
 const productionPackageBusy = ref(false)
 const productionPackageConfirming = ref(false)
 const productionPackageIdempotencyKey = ref('')
+const productionPackageError = ref('')
 const analysis = ref(null)
 const analyzing = ref(false)
 const analyzingStyles = ref(false)
@@ -745,6 +748,7 @@ function closeCreateDialog() {
 
 function selectSourceMode(mode) {
   sourceMode.value = mode
+  productionPackageError.value = ''
   if (mode !== 'production-package') {
     productionPackageFile.value = null
     productionPackagePreview.value = null
@@ -769,13 +773,15 @@ async function previewProductionPackage(file) {
   }
   try {
     productionPackageBusy.value = true
+    productionPackageError.value = ''
     productionPackageFile.value = file
     productionPackageIdempotencyKey.value = idempotencyKey()
     productionPackagePreview.value = await productionPackageAPI.preview(file)
     createStep.value = 'package-preview'
   } catch (e) {
     productionPackagePreview.value = null
-    toast.error(e.message || '生产包解析失败，请检查 ZIP 内容')
+    productionPackageError.value = formatProductionPackageError(e, '生产包解析失败，请检查 ZIP 内容')
+    toast.error(productionPackageError.value)
   } finally {
     productionPackageBusy.value = false
   }
@@ -801,11 +807,23 @@ function idempotencyKey() {
   return `ui-${uuid || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`
 }
 
+function formatProductionPackageError(error, fallback) {
+  const messages = {
+    PACKAGE_PREVIEW_EXPIRED: '预览已过期，请重新上传 ZIP 后再确认。',
+    PACKAGE_SNAPSHOT_MISMATCH: '预览内容已变化，请重新上传 ZIP，避免导入错误版本。',
+    PACKAGE_IMPORT_IN_PROGRESS: '导入正在处理中，请稍候；不要生成新的幂等键重复提交。',
+    PACKAGE_IMPORT_IDEMPOTENCY_CONFLICT: '本次幂等键已用于其他生产包，请重新上传并重新发起导入。',
+    PACKAGE_IMPORT_FAILED: '导入失败且未创建完整项目；请查看错误后修正生产包，再使用新的幂等键重试。',
+  }
+  return messages[error?.code] || error?.message || fallback
+}
+
 async function confirmProductionPackage() {
   const preview = productionPackagePreview.value
   if (!preview?.can_confirm || productionPackageConfirming.value) return
   try {
     productionPackageConfirming.value = true
+    productionPackageError.value = ''
     const result = await productionPackageAPI.confirm({
       preview_token: preview.preview_token,
       package_fingerprint: preview.package.package_fingerprint,
@@ -818,7 +836,8 @@ async function confirmProductionPackage() {
     await load()
     navigateTo(`/drama/${result.drama_id}`)
   } catch (e) {
-    toast.error(e.message || '确认导入失败，请重试')
+    productionPackageError.value = formatProductionPackageError(e, '确认导入失败，请检查提示后重试')
+    toast.error(productionPackageError.value)
   } finally {
     productionPackageConfirming.value = false
   }

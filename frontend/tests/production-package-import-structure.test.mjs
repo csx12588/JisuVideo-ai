@@ -32,4 +32,14 @@ test('production-package API uploads multipart FormData and uses shared preview 
   assert.match(api, /fd\.append\('file', file\)/)
   assert.match(api, /production-packages\/preview/)
   assert.match(api, /production-packages\/import\/confirm/)
+  assert.match(api, /credentials: 'same-origin'/)
+})
+
+test('production-package errors preserve actionable retry guidance', () => {
+  assert.match(page, /PACKAGE_PREVIEW_EXPIRED/)
+  assert.match(page, /PACKAGE_SNAPSHOT_MISMATCH/)
+  assert.match(page, /PACKAGE_IMPORT_IN_PROGRESS/)
+  assert.match(page, /PACKAGE_IMPORT_IDEMPOTENCY_CONFLICT/)
+  assert.match(page, /PACKAGE_IMPORT_FAILED/)
+  assert.match(page, /productionPackageError/)
 })
