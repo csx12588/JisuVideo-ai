@@ -151,3 +151,16 @@ test('普通错误：toast 提示且编辑器保持打开，可重试', async ()
   expect(wrapper.find('form.project-bible-form').exists()).toBe(true)
   expect(wrapper.text()).not.toContain('VERSION_CONFLICT')
 })
+
+test('整版全空：客户端拦截，不发出保存请求（避免空版本覆盖空态）', async () => {
+  const wrapper = await mountCard(emptyView)
+
+  await buttonIn(wrapper, '开始编辑').trigger('click')
+  await flushPromises()
+  await wrapper.get('form.project-bible-form').trigger('submit')
+  await flushPromises()
+
+  expect(m.save).not.toHaveBeenCalled()
+  expect(m.toast.error).toHaveBeenCalled()
+  expect(wrapper.find('form.project-bible-form').exists()).toBe(true)
+})

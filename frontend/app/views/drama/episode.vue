@@ -34,10 +34,12 @@
             <span class="studio-meta-pill is-progress">{{ pipelineProgress }}/{{ pipelineTotal }}</span>
             <span class="studio-meta-inline">{{ chars.length }} 角色 · {{ sbs.length }} 段落</span>
           </div>
-          <div v-if="episodeBible" class="studio-bible-row">
-            <span v-if="episodeBible.objective" class="studio-bible-item"><b>本集目标</b>{{ episodeBible.objective }}</span>
-            <span v-if="episodeBible.previous_recap" class="studio-bible-item"><b>承接</b>{{ episodeBible.previous_recap }}</span>
-            <span v-if="episodeBible.hook" class="studio-bible-item"><b>钩子</b>{{ episodeBible.hook }}</span>
+          <div v-if="episodeBible || bibleLoadError" class="studio-bible-row">
+            <span v-if="bibleLoadError" class="tag tag-error studio-bible-error" title="点击重试" @click="loadBible">大纲信息加载失败，点击重试</span>
+            <span v-if="episodeBible?.objective" class="studio-bible-item"><b>本集目标</b>{{ episodeBible.objective }}</span>
+            <span v-if="episodeBible?.previous_recap" class="studio-bible-item"><b>承接</b>{{ episodeBible.previous_recap }}</span>
+            <span v-if="episodeBible?.hook" class="studio-bible-item"><b>钩子</b>{{ episodeBible.hook }}</span>
+            <span v-if="episodeBible?.next_teaser" class="studio-bible-item"><b>下集预告</b>{{ episodeBible.next_teaser }}</span>
           </div>
         </div>
       </div>
@@ -1775,6 +1777,8 @@ const episodeNumber = Number(route.params.episodeNumber)
 
 // 项目圣经（Issue #121）：本集从大纲继承的目标 / 上集承接 / 下集钩子（只读展示）
 const bibleOutline = ref(null)
+// R1 规范：加载失败保留旧值并内联呈现，禁止静默置空回落空态
+const bibleLoadError = ref('')
 const episodeBible = computed(() => {
   const episodes = Array.isArray(bibleOutline.value?.episodes) ? bibleOutline.value.episodes : []
   return episodes.find(item => Number(item.episode_number) === episodeNumber) || null
@@ -1783,8 +1787,9 @@ async function loadBible() {
   try {
     const bible = await bibleAPI.get(dramaId)
     bibleOutline.value = bible?.has_data ? bible.bible : null
-  } catch {
-    bibleOutline.value = null
+    bibleLoadError.value = ''
+  } catch (error) {
+    bibleLoadError.value = error?.message || '大纲信息加载失败'
   }
 }
 
@@ -4392,6 +4397,9 @@ onMounted(async () => { await refresh(true); loadConfigs(); syncExtractStatus();
   gap: 6px;
   color: var(--text-2);
   font-size: 12px;
+}
+.studio-bible-error {
+  cursor: pointer;
 }
 
 /* ===== Studio Layout ===== */

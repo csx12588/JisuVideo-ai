@@ -313,12 +313,34 @@ function buildBible() {
   }
 }
 
+function hasAnyBibleContent(bible) {
+  const textKeys = ['logline', 'genre', 'audience', 'tone', 'visual_style', 'worldview', 'main_conflict', 'core_suspense', 'ending_promise']
+  if (textKeys.some(key => String(bible[key] || '').trim())) return true
+  if (bible.stages.some(stage => (
+    String(stage.name || '').trim() || String(stage.goal || '').trim() || String(stage.episode_range || '').trim()
+  ))) return true
+  if (bible.foreshadowing.length || bible.forbidden.length) return true
+  if (bible.episodes.some(episode => (
+    String(episode.objective || '').trim()
+    || String(episode.hook || '').trim()
+    || String(episode.previous_recap || '').trim()
+    || String(episode.next_teaser || '').trim()
+  ))) return true
+  return false
+}
+
 async function save() {
+  const payload = buildBible()
+  // 与服务端一致：拒绝「整版全空」，避免写入空版本导致空态提示永久消失
+  if (!hasAnyBibleContent(payload)) {
+    toast.error('请至少填写一项大纲内容后再保存')
+    return
+  }
   saving.value = true
   conflict.value = ''
   try {
     view.value = await bibleAPI.save(props.dramaId, {
-      bible: buildBible(),
+      bible: payload,
       expected_version_id: view.value?.version_id ?? null,
     })
     editing.value = false

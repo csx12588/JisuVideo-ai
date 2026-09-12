@@ -129,6 +129,28 @@ export function projectBibleHash(bible: ProjectBible) {
   return createHash('sha256').update(JSON.stringify(bible)).digest('hex')
 }
 
+/**
+ * 判定大纲是否「整版全空」。
+ * 用于两处：① 保存时拒绝空版本（避免「已确认但每项都是 —」且空态永久消失）；
+ * ② 读视图 has_data 按内容判定，兼容历史/外部写入的空版本。
+ */
+export function isProjectBibleEmpty(bible: ProjectBible): boolean {
+  const textFields = [
+    bible.logline, bible.genre, bible.audience, bible.tone, bible.visual_style,
+    bible.worldview, bible.main_conflict, bible.core_suspense, bible.ending_promise,
+  ]
+  if (textFields.some(value => String(value || '').trim().length > 0)) return false
+  if (bible.stages.some(stage => String(stage.name || '').trim() || String(stage.goal || '').trim() || String(stage.episode_range || '').trim())) return false
+  if (bible.foreshadowing.length || bible.forbidden.length) return false
+  if (bible.episodes.some(episode => (
+    String(episode.objective || '').trim()
+    || String(episode.hook || '').trim()
+    || String(episode.previous_recap || '').trim()
+    || String(episode.next_teaser || '').trim()
+  ))) return false
+  return true
+}
+
 export function emptyProjectBible(): ProjectBibleView {
   return {
     version_id: null,
@@ -154,7 +176,8 @@ export function serializeProjectBible(row: any): ProjectBibleView {
     content_hash: String(row.content_hash || ''),
     created_at: row.created_at ?? null,
     updated_at: row.updated_at ?? null,
-    has_data: bible !== null,
+    // 按内容判定：空版本（历史/外部写入）不得让「已确认」状态与空态提示同时消失
+    has_data: bible !== null && !isProjectBibleEmpty(bible),
     bible,
   }
 }
@@ -237,6 +260,11 @@ export async function saveProjectBible(options: {
         throw new ProjectBibleConflict(
           'VERSION_CONFLICT：大纲已有更新，请重新加载后再保存',
         )
+      }
+      // 拒绝「整版全空」：否则会写入一个每项都是 — 的版本，且空态提示永久消失。
+      // 顺序：404（项目不存在）→ 409（版本冲突）→ 400（内容为空）。
+      if (isProjectBibleEmpty(bible)) {
+        throw new Error('大纲内容不能全部为空，请至少填写一项后再保存')
       }
 
       const ts = new Date().toISOString()

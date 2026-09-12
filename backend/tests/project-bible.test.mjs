@@ -26,6 +26,7 @@ const read = (path) => readFileSync(new URL(path, root), 'utf8')
 const {
   normalizeProjectBible,
   projectBibleHash,
+  isProjectBibleEmpty,
   serializeProjectBible,
   emptyProjectBible,
   getProjectBible,
@@ -86,6 +87,27 @@ test('projectBibleHash：与规范化 JSON 的 sha256 一致，且对 trim 归�
   assert.equal(projectBibleHash(normalized), createHash('sha256').update(JSON.stringify(normalized)).digest('hex'))
   assert.equal(projectBibleHash(normalized), projectBibleHash(normalizeProjectBible({ logline: '  A  ' })))
   assert.notEqual(projectBibleHash(normalized), projectBibleHash(normalizeProjectBible({ logline: 'B' })))
+})
+
+test('isProjectBibleEmpty：全空为 true，任一字段/条目非空为 false', () => {
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({})), true)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ logline: '   ' })), true)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ logline: 'A' })), false)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ stages: [{ name: '', goal: '', episode_range: '' }] })), true)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ stages: [{ goal: '阶段目标' }] })), false)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ foreshadowing: ['伏笔'] })), false)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ forbidden: ['禁区'] })), false)
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ episodes: [{ episode_number: 1, hook: '钩子' }] })), false)
+  // 只有空集号、无任何文字的条目不算内容
+  assert.equal(isProjectBibleEmpty(normalizeProjectBible({ episodes: [{ episode_number: 2 }] })), true)
+})
+
+test('serializeProjectBible：整版全空视为无数据（has_data=false），空态不消失', () => {
+  const view = serializeProjectBible({
+    id: 9, source: 'manual', content_hash: 'h', created_at: 't', updated_at: 't', outline_json: JSON.stringify({}),
+  })
+  assert.equal(view.version_id, 9)
+  assert.equal(view.has_data, false, '空版本不得显示为已确认')
 })
 
 test('serializeProjectBible / emptyProjectBible：读视图字段完整', () => {
@@ -256,6 +278,14 @@ test('真实 MySQL：项目圣经版本行不可变、指针切换、历史倒�
     )
     const [countRows] = await pool.query('SELECT COUNT(*) AS count FROM project_bible_versions WHERE drama_id = ?', [dramaId])
     assert.equal(Number(countRows[0].count), 2, '冲突写入不得留下版本行')
+
+    // 4.7b 整版全空：拒绝且不产生版本行（避免「已确认但每项都是 —」且空态永久消失）
+    await assert.rejects(
+      () => saveProjectBible({ dramaId, bible: {}, expectedVersionId: second.version_id, connectionPool: pool }),
+      /大纲内容不能全部为空/,
+    )
+    const [countAfterEmpty] = await pool.query('SELECT COUNT(*) AS count FROM project_bible_versions WHERE drama_id = ?', [dramaId])
+    assert.equal(Number(countAfterEmpty[0].count), 2, '空版本不得落库')
 
     // 4.8 跨项目隔离：另一项目独立空态与历史
     const other = await saveProjectBible({

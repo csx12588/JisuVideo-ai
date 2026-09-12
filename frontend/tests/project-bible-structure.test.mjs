@@ -57,21 +57,36 @@ test('ProjectBibleCard：覆盖大纲结构化字段（全局设定 / 阶段 / �
   assert.match(card, /next_teaser/)
 })
 
-test('episode.vue 展示本集从大纲继承的目标 / 承接 / 钩子', () => {
+test('episode.vue 展示本集从大纲继承的目标 / 承接 / 钩子 / 下集预告', () => {
   const page = read('app/views/drama/episode.vue')
   assert.match(page, /bibleAPI/)
   assert.match(page, /const episodeBible = computed/)
   assert.match(page, /Number\(item\.episode_number\) === episodeNumber/)
-  assert.match(page, /v-if="episodeBible" class="studio-bible-row"/)
+  assert.match(page, /v-if="episodeBible \|\| bibleLoadError" class="studio-bible-row"/)
   assert.match(page, /本集目标/)
   assert.match(page, /承接/)
   assert.match(page, /钩子/)
-  // 加载失败不得影响工作台主流程
-  assert.match(page, /bibleOutline\.value = null/)
+  assert.match(page, /下集预告/)
+  assert.match(page, /episodeBible\?\.next_teaser/)
+})
+
+test('episode.vue 大纲加载失败：保留旧值并内联提示（对齐 R1，不静默置空）', () => {
+  const page = read('app/views/drama/episode.vue')
+  assert.match(page, /const bibleLoadError = ref\(''\)/)
+  assert.match(page, /bibleLoadError\.value = error\?\.message \|\| '大纲信息加载失败'/)
+  assert.match(page, /class="tag tag-error studio-bible-error"/)
+  assert.doesNotMatch(page, /catch \{\s*\n\s*bibleOutline\.value = null/)
 })
 
 test('UI token 守卫：ProjectBibleCard 不引入硬编码色值', () => {
   const card = read('app/components/ProjectBibleCard.vue')
   assert.doesNotMatch(card, /#[0-9a-fA-F]{3,8}\b/, '不得硬编码十六进制色值')
   assert.doesNotMatch(card, /rgba?\(/, '不得硬编码 rgb/rgba 色值')
+})
+
+test('ProjectBibleCard：拒绝整版全空保存（与服务端一致，空态不被永久覆盖）', () => {
+  const card = read('app/components/ProjectBibleCard.vue')
+  assert.match(card, /function hasAnyBibleContent/)
+  assert.match(card, /请至少填写一项大纲内容后再保存/)
+  assert.match(card, /if \(!hasAnyBibleContent\(payload\)\)/)
 })
